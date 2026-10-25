@@ -1,0 +1,10 @@
+streamlit
+scikit-learn
+pandas
+numpy
+requests
+tldextract
+rapidfuzz
+scipy
+matplotlib
+seaborn
