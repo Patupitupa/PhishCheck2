@@ -21,12 +21,20 @@ st.write("Enter a URL below to check if it's safe or a malicious scam using your
 # --- Load Model Artifacts ---
 @st.cache_resource
 def load_artifacts():
-    # Load your saved dictionary artifact from Colab
-    data = pickle.load(open("phishcheck_v2_2.pkl", "rb"))
-    # Extract the specific model you want to use
+    # Load your saved dictionary artifact using pickle
+    with open("phishcheck_v2_2.pkl", "rb") as f:
+        data = pickle.load(f)
+        
+    # Extract model, vectorizer, and scaler safely
     model = data["results"]["Support Vector Machine (LinearSVC)"]["model"]
     tfidf_url = data["tfidf_url"]
     scaler = data["scaler"]
+    
+    # --- BULLETPROOF SCALER COMPATIBILITY PATCH ---
+    # Prevents 'MaxAbsScaler' object has no attribute 'clip' crash across scikit-learn versions
+    if scaler and not hasattr(scaler, 'clip'):
+        scaler.clip = False
+        
     return model, tfidf_url, scaler
 
 try:
