@@ -11,6 +11,7 @@ st.caption("URL-based risk estimate. Not a guarantee. Always verify important li
 CHECKS_PER_MINUTE_SESSION = 10     # per visitor session
 CHECKS_PER_MINUTE_GLOBAL = 60      # all visitors together (protects the redirect resolver)
 MAX_QR_LINKS = 3                   # links read from one QR image
+LEGIT_CUTOFF = 0.80                # model legit score needed for "Likely legit"; 0.5 up to this = "Not sure"
 STATUS_TEXT = {
     200: "OK (page loaded)",
     301: "Moved permanently",
@@ -44,6 +45,8 @@ if "limiter" not in st.session_state:
 n_db = pu.phish_db_count()
 st.caption(f"Known-phishing database: {n_db:,} reported links." if n_db
            else "Known-phishing database not loaded; using the model only.")
+st.caption(f"Results: likely legit (model confidence {LEGIT_CUTOFF:.0%} or higher), not sure, or likely phishing. "
+           "These are the model's confidence scores, not probabilities.")
 
 
 def allowed():
@@ -78,10 +81,16 @@ def show(raw):
     if r["known_phish"]:
         where = "The link you entered" if r["match"] == "original" else "The page this link redirects to"
         st.error(f"Known phishing link. {where} is in the reported-phishing database. Do not open it.")
-    elif r["label"] == 1:
-        st.success(f"{r['status']} ({r['confidence']:.1f}% model confidence)")
     else:
-        st.error(f"{r['status']} ({r['confidence']:.1f}% model confidence)")
+        p = r["p_legit"]
+        tier = pu.tier_from_score(p, LEGIT_CUTOFF)
+        if tier == "legit":
+            st.success(f"Likely legit. The model is {p * 100:.0f}% confident this link is legitimate.")
+        elif tier == "unsure":
+                        st.warning(f"Unverified ({p * 100:.0f}% legit score). The model leans legit but can't confirm it. "
+                       "Don't enter passwords or payment details until you've checked the site yourself.")
+        else:
+            st.error(f"Likely phishing. The model is {(1 - p) * 100:.0f}% confident this link is a scam.")
 
     # st.code shows text literally, so a crafted link can never render as markdown or a clickable link
     st.caption("Scanned:")

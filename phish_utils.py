@@ -392,11 +392,25 @@ def _known_result(original, matched_url, match, error=None, chain=None):
         "label": 0,
         "status": "Known phishing link",
         "confidence": None,
+        "p_legit": None,
         "known_phish": True,
         "match": match,                      # "original" or "final"
         "resolution_error": error,
         "redirect_chain": chain or [],
     }
+
+
+def tier_from_score(p_legit, cutoff):
+    """Three-way verdict from the model's legit score (0 to 1).
+    below 0.5 -> "phish" (no grey zone on this side: a lean towards scam is treated as scam)
+    0.5 up to cutoff -> "unsure"
+    cutoff or higher -> "legit"
+    """
+    if p_legit < 0.5:
+        return "phish"
+    if p_legit < cutoff:
+        return "unsure"
+    return "legit"
 
 
 # ---------- One-call analysis for the app ----------
@@ -433,6 +447,7 @@ def analyze(url, art, resolve_redirects=True, use_db=True):
     model = art["model"]
     probs = model.predict_proba(X)[0]
     label = int(np.argmax(probs))
+    p_legit = float(probs[list(model.classes_).index(1)])     # model's score that the link is legit (0 to 1)
     return {
         "url": original,
         "analysis_url": analysis_url,
@@ -440,6 +455,7 @@ def analyze(url, art, resolve_redirects=True, use_db=True):
         "label": label,
         "status": "Legitimate / Secure" if label == 1 else "Scam / Phishing / Risky",
         "confidence": float(probs[label] * 100),
+        "p_legit": p_legit,
         "known_phish": False,
         "match": None,
         "resolution_error": error,
