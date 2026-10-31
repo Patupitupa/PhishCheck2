@@ -1,10 +1,10 @@
 streamlit
-scikit-learn
-pandas
+scikit-learn==1.6.1
+joblib
 numpy
-requests
-tldextract
-rapidfuzz
 scipy
-matplotlib
-seaborn
+tldextract
+requests
+pillow
+opencv-python-headless
+pyzbar
