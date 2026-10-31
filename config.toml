@@ -1,0 +1,5 @@
+[server]
+maxUploadSize = 2
+
+[browser]
+gatherUsageStats = false

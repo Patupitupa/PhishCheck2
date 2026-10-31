@@ -8,7 +8,8 @@ The app must set these two after loading the joblib file:
     pu.TRANCO_SET = art["tranco"]
     pu.SHORTENER_DOMAINS = art["shorteners"]
 """
-import re, html, socket, ipaddress, math
+import os, re, html, socket, ipaddress, math, sqlite3
+from pathlib import Path
 from collections import Counter
 from urllib.parse import urlparse, urljoin, parse_qs, unquote
 
@@ -316,15 +317,103 @@ def scan_qr_from_image(image_path):
         return {"ok": False, "error": f"{type(e).__name__}: {e}", "data": []}
 
 
+# ---------- Input validation ----------
+MAX_URL_LEN = 2048
+_INVISIBLE = re.compile(r"[\x00-\x1f\x7f\u200b-\u200f\u2028-\u202e\u2060\ufeff]")
+
+
+def validate_url_input(raw):
+    """Returns (clean_url, error). error is None when the input is acceptable.
+    Only http/https links (or bare hostnames) are accepted."""
+    if raw is None:
+        return None, "Enter a link."
+    s = _INVISIBLE.sub("", str(raw)).strip()
+    if not s:
+        return None, "Enter a link."
+    if len(s) > MAX_URL_LEN:
+        return None, f"That link is too long (max {MAX_URL_LEN} characters)."
+    if re.search(r"\s", s):
+        return None, "Links can't contain spaces."
+    m = re.match(r"^([a-z][a-z0-9+.\-]*):(?!\d)", s, re.I)   # scheme-like prefix, not host:port
+    if m and m.group(1).lower() not in ("http", "https"):
+        return None, "Only http and https links are supported."
+    try:
+        host = urlparse(s if "://" in s else "http://" + s).hostname
+    except ValueError:
+        return None, "That doesn't look like a valid web address."
+    if not host or "." not in host:
+        return None, "That doesn't look like a valid web address."
+    return s, None
+
+
+# ---------- Known-phishing database (read-only SQLite) ----------
+PHISH_DB_PATH = str(Path(__file__).resolve().parent / "phish.db")
+
+
+def _open_ro(db_path=None):
+    path = Path(db_path or PHISH_DB_PATH).resolve()
+    return sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2)
+
+
+def phish_db_count(db_path=None):
+    """Number of entries, or None if the database is missing/unreadable."""
+    try:
+        con = _open_ro(db_path)
+        try:
+            return con.execute("SELECT COUNT(*) FROM phish").fetchone()[0]
+        finally:
+            con.close()
+    except (sqlite3.Error, OSError):
+        return None
+
+
+def lookup_known_phish(url, db_path=None):
+    """True if the canonical URL is an exact match in the known-phishing table.
+    Read-only connection and a parameterised query: user text is never put into SQL."""
+    key = canon(url)
+    if not key:
+        return False
+    try:
+        con = _open_ro(db_path)
+        try:
+            row = con.execute("SELECT 1 FROM phish WHERE url = ? LIMIT 1", (key,)).fetchone()
+        finally:
+            con.close()
+        return row is not None
+    except (sqlite3.Error, OSError):
+        return False
+
+
+def _known_result(original, matched_url, match, error=None, chain=None):
+    return {
+        "url": original,
+        "analysis_url": matched_url,
+        "domain": extract_domain(matched_url),
+        "label": 0,
+        "status": "Known phishing link",
+        "confidence": None,
+        "known_phish": True,
+        "match": match,                      # "original" or "final"
+        "resolution_error": error,
+        "redirect_chain": chain or [],
+    }
+
+
 # ---------- One-call analysis for the app ----------
-def analyze(url, art, resolve_redirects=True):
+def analyze(url, art, resolve_redirects=True, use_db=True):
     """
-    art = joblib.load("phishcheck_final.joblib")
-    Returns a dict with label (0 = risky, 1 = legit), confidence (%), and the resolved url.
+    Order: (1) look the typed link up in the known-phishing database, and stop on a hit
+    (the redirect resolver is never run, so the app does not visit a known-bad page);
+    (2) resolve redirects; (3) look the final link up; (4) run the model.
+    Returns a dict with label (0 = risky, 1 = legit), confidence (% or None on a database hit).
     """
     original = normalize_url(url)
     if not original:
         return {"error": "Empty URL"}
+
+    if use_db and lookup_known_phish(original):
+        return _known_result(original, canon(original), "original")
+
     final, error, chain = original, None, []
     if resolve_redirects:
         res = resolve_final_url(original)
@@ -332,6 +421,9 @@ def analyze(url, art, resolve_redirects=True):
         if res["error"] is None:
             final = res["final_url"]
     analysis_url = canon(final)
+
+    if use_db and analysis_url != canon(original) and lookup_known_phish(analysis_url):
+        return _known_result(original, analysis_url, "final", error, chain)
 
     X = hstack([
         art["tfidf_url"].transform([analysis_url]),
@@ -348,6 +440,8 @@ def analyze(url, art, resolve_redirects=True):
         "label": label,
         "status": "Legitimate / Secure" if label == 1 else "Scam / Phishing / Risky",
         "confidence": float(probs[label] * 100),
+        "known_phish": False,
+        "match": None,
         "resolution_error": error,
         "redirect_chain": chain,
     }
